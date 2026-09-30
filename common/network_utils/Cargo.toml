@@ -5,6 +5,7 @@ edition = { workspace = true }
 
 [dependencies]
 discv5 = { workspace = true }
+enr = { workspace = true }
 libp2p-identity = "0.2"
 lru_cache = { workspace = true }
 metrics = { workspace = true }

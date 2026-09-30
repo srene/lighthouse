@@ -1,6 +1,6 @@
 //! Helper functions and an extension trait for Ethereum 2 ENRs.
 
-pub use discv5::enr::CombinedKey;
+pub use enr::CombinedKey;
 
 use super::ENR_FILENAME;
 use crate::NetworkConfig;
@@ -189,7 +189,7 @@ pub fn build_enr<E: EthSpec>(
     next_fork_digest: [u8; 4],
     spec: &ChainSpec,
 ) -> Result<Enr, String> {
-    let mut builder = discv5::enr::Enr::builder();
+    let mut builder = enr::Enr::builder();
     let (maybe_ipv4_address, maybe_ipv6_address) = &config.enr_address;
 
     if let Some(ip) = maybe_ipv4_address {

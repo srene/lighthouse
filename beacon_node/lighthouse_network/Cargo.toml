@@ -14,6 +14,7 @@ delay_map = { workspace = true }
 directory = { workspace = true }
 dirs = { workspace = true }
 discv5 = { workspace = true }
+enr = { workspace = true }
 either = { workspace = true }
 eth2 = { workspace = true, features = ["lighthouse"] }
 ethereum_ssz = { workspace = true }

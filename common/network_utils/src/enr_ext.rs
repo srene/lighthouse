@@ -1,11 +1,11 @@
 //! ENR extension trait to support libp2p integration.
 
-use discv5::enr::{CombinedKey, CombinedPublicKey};
+use enr::{CombinedKey, CombinedPublicKey};
 use libp2p_identity::{KeyType, Keypair, PublicKey, ed25519, secp256k1};
 use multiaddr::{Multiaddr, PeerId, Protocol};
 use tiny_keccak::{Hasher, Keccak};
 
-type Enr = discv5::enr::Enr<CombinedKey>;
+type Enr = enr::Enr<CombinedKey>;
 
 pub const QUIC_ENR_KEY: &str = "quic";
 pub const QUIC6_ENR_KEY: &str = "quic6";
@@ -284,13 +284,13 @@ impl CombinedKeyExt for CombinedKey {
             KeyType::Secp256k1 => {
                 let key = key.try_into_secp256k1().expect("right key type");
                 let secret =
-                    discv5::enr::k256::ecdsa::SigningKey::from_slice(&key.secret().to_bytes())
+                    enr::k256::ecdsa::SigningKey::from_slice(&key.secret().to_bytes())
                         .expect("libp2p key must be valid");
                 Ok(CombinedKey::Secp256k1(secret))
             }
             KeyType::Ed25519 => {
                 let key = key.try_into_ed25519().expect("right key type");
-                let ed_keypair = discv5::enr::ed25519_dalek::SigningKey::from_bytes(
+                let ed_keypair = enr::ed25519_dalek::SigningKey::from_bytes(
                     &(key.to_bytes()[..32])
                         .try_into()
                         .expect("libp2p key must be valid"),
@@ -301,7 +301,7 @@ impl CombinedKeyExt for CombinedKey {
         }
     }
     fn from_secp256k1(key: &secp256k1::Keypair) -> Self {
-        let secret = discv5::enr::k256::ecdsa::SigningKey::from_slice(&key.secret().to_bytes())
+        let secret = enr::k256::ecdsa::SigningKey::from_slice(&key.secret().to_bytes())
             .expect("libp2p key must be valid");
         CombinedKey::Secp256k1(secret)
     }
@@ -309,7 +309,7 @@ impl CombinedKeyExt for CombinedKey {
 
 // helper function to convert a peer_id to a node_id. This is only possible for secp256k1/ed25519 libp2p
 // peer_ids
-pub fn peer_id_to_node_id(peer_id: &PeerId) -> Result<discv5::enr::NodeId, String> {
+pub fn peer_id_to_node_id(peer_id: &PeerId) -> Result<enr::NodeId, String> {
     // A libp2p peer id byte representation should be 2 length bytes + 4 protobuf bytes + compressed pk bytes
     // if generated from a PublicKey with Identity multihash.
     let pk_bytes = &peer_id.to_bytes()[2..];
@@ -332,7 +332,7 @@ pub fn peer_id_to_node_id(peer_id: &PeerId) -> Result<discv5::enr::NodeId, Strin
             let mut hasher = Keccak::v256();
             hasher.update(uncompressed_key_bytes);
             hasher.finalize(&mut output);
-            Ok(discv5::enr::NodeId::parse(&output).expect("Must be correct length"))
+            Ok(enr::NodeId::parse(&output).expect("Must be correct length"))
         }
         KeyType::Ed25519 => {
             let pk = public_key
@@ -344,7 +344,7 @@ pub fn peer_id_to_node_id(peer_id: &PeerId) -> Result<discv5::enr::NodeId, Strin
             let mut hasher = Keccak::v256();
             hasher.update(&uncompressed_key_bytes);
             hasher.finalize(&mut output);
-            Ok(discv5::enr::NodeId::parse(&output).expect("Must be correct length"))
+            Ok(enr::NodeId::parse(&output).expect("Must be correct length"))
         }
 
         _ => Err(format!("Unsupported public key from peer {}", peer_id)),
@@ -360,14 +360,14 @@ mod tests {
     fn test_secp256k1_peer_id_conversion() {
         let sk_hex = "df94a73d528434ce2309abb19c16aedb535322797dbd59c157b1e04095900f48";
         let sk_bytes = hex::decode(sk_hex).unwrap();
-        let secret_key = discv5::enr::k256::ecdsa::SigningKey::from_slice(&sk_bytes).unwrap();
+        let secret_key = enr::k256::ecdsa::SigningKey::from_slice(&sk_bytes).unwrap();
 
         let libp2p_sk = secp256k1::SecretKey::try_from_bytes(sk_bytes).unwrap();
         let secp256k1_kp: secp256k1::Keypair = libp2p_sk.into();
         let libp2p_kp: Keypair = secp256k1_kp.into();
         let peer_id = libp2p_kp.public().to_peer_id();
 
-        let enr = discv5::enr::Enr::builder().build(&secret_key).unwrap();
+        let enr = enr::Enr::builder().build(&secret_key).unwrap();
         let node_id = peer_id_to_node_id(&peer_id).unwrap();
 
         assert_eq!(enr.node_id(), node_id);
@@ -377,7 +377,7 @@ mod tests {
     fn test_ed25519_peer_conversion() {
         let sk_hex = "4dea8a5072119927e9d243a7d953f2f4bc95b70f110978e2f9bc7a9000e4b261";
         let sk_bytes = hex::decode(sk_hex).unwrap();
-        let secret_key = discv5::enr::ed25519_dalek::SigningKey::from_bytes(
+        let secret_key = enr::ed25519_dalek::SigningKey::from_bytes(
             &sk_bytes.clone().try_into().unwrap(),
         );
 
@@ -386,7 +386,7 @@ mod tests {
         let libp2p_kp: Keypair = secp256k1_kp.into();
         let peer_id = libp2p_kp.public().to_peer_id();
 
-        let enr = discv5::enr::Enr::builder().build(&secret_key).unwrap();
+        let enr = enr::Enr::builder().build(&secret_key).unwrap();
         let node_id = peer_id_to_node_id(&peer_id).unwrap();
 
         assert_eq!(enr.node_id(), node_id);

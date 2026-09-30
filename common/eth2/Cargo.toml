@@ -15,7 +15,7 @@ bls = { workspace = true }
 context_deserialize = { workspace = true }
 educe = { workspace = true }
 eip_3076 = { workspace = true, optional = true }
-enr = { version = "0.13.0", features = ["ed25519"], optional = true }
+enr = { workspace = true, optional = true }
 eth2_keystore = { workspace = true, optional = true }
 ethereum_serde_utils = { workspace = true }
 ethereum_ssz = { workspace = true }

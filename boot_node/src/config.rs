@@ -2,7 +2,8 @@ use beacon_node::{get_data_dir, set_network_config};
 use bytes::Bytes;
 use clap::ArgMatches;
 use eth2_network_config::Eth2NetworkConfig;
-use lighthouse_network::discv5::{self, Enr, enr::CombinedKey};
+use lighthouse_network::discv5::{self, Enr};
+use lighthouse_network::enr::CombinedKey;
 use lighthouse_network::{
     NetworkConfig,
     discovery::{load_enr_from_disk, use_or_load_enr},
@@ -88,6 +89,8 @@ impl<E: EthSpec> BootNodeConfig<E> {
         // By default this is enabled. If it is not set, revert to false.
         if !matches.get_flag("enable-enr-auto-update") {
             network_config.discv5_config.enr_update = false;
+            // local-only test patch: accept non-global (loopback) ENRs in the routing table
+            network_config.discv5_config.table_filter = |_| true;
         }
 
         let private_key = load_private_key(&network_config);
