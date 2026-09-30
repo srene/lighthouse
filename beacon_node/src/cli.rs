@@ -444,6 +444,15 @@ pub fn cli_app() -> Command {
                 .display_order(0)
         )
         .arg(
+            Arg::new("discovery-topic")
+                .long("discovery-topic")
+                .value_name("TOPIC")
+                .help("A discv5 topic (32-byte hex id, or a name that is hashed) to register and search. \
+                       When set, the topic search is the only source of peers to dial.")
+                .action(ArgAction::Set)
+                .display_order(0)
+        )
+        .arg(
             Arg::new("disable-self-limiter")
                 .long("disable-self-limiter")
                 .help(

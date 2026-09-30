@@ -277,7 +277,7 @@ impl<E: EthSpec> Network<E> {
             let thresholds = lighthouse_gossip_thresholds();
 
             // Prepare scoring parameters
-            let params = {
+            let mut params = {
                 // Construct a set of gossipsub peer scoring parameters
                 // We don't know the number of active validators and the current slot yet
                 let active_validators = E::minimum_validator_count();
@@ -289,6 +289,10 @@ impl<E: EthSpec> Network<E> {
                     current_slot,
                 )?
             };
+            // A local testnet has all its peers on one IP address.
+            if config.disable_peer_scoring {
+                params.ip_colocation_factor_weight = 0.0;
+            }
 
             trace!(?params, "Using peer score params");
 
@@ -604,7 +608,12 @@ impl<E: EthSpec> Network<E> {
         }
 
         // attempt to connect to any specified boot-nodes
-        let mut boot_nodes = config.boot_nodes_enr.clone();
+        // With a discovery topic, boot nodes are not dial targets.
+        let mut boot_nodes = if config.discovery_topic.is_some() {
+            Vec::new()
+        } else {
+            config.boot_nodes_enr.clone()
+        };
         boot_nodes.dedup();
 
         for bootnode_enr in boot_nodes {
@@ -642,9 +651,10 @@ impl<E: EthSpec> Network<E> {
 
         for multiaddr in &config.boot_nodes_multiaddr {
             // check TCP support for dialing
-            if multiaddr
-                .iter()
-                .any(|proto| matches!(proto, MProtocol::Tcp(_)))
+            if config.discovery_topic.is_none()
+                && multiaddr
+                    .iter()
+                    .any(|proto| matches!(proto, MProtocol::Tcp(_)))
             {
                 dial(multiaddr.clone());
             }

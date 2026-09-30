@@ -146,6 +146,10 @@ pub struct Config {
 
     /// Whether to enable partial data column support.
     pub enable_partial_columns: bool,
+
+    /// A discv5 topic to register and search. When set, the topic search is the only source
+    /// of peers to dial.
+    pub discovery_topic: Option<[u8; 32]>,
 }
 
 impl Config {
@@ -372,8 +376,17 @@ impl Default for Config {
             idontwant_message_size_threshold: DEFAULT_IDONTWANT_MESSAGE_SIZE_THRESHOLD,
             advertise_false_custody_group_count: None,
             enable_partial_columns: false,
+            discovery_topic: None,
         }
     }
+}
+
+/// Takes a 32-byte hex id as is and hashes any other name into a discovery topic.
+pub fn parse_discovery_topic(s: &str) -> [u8; 32] {
+    hex::decode(s.trim_start_matches("0x"))
+        .ok()
+        .and_then(|bytes| bytes.try_into().ok())
+        .unwrap_or_else(|| alloy_primitives::keccak256(s.as_bytes()).0)
 }
 
 /// Controls sizes of gossipsub meshes to tune a Lighthouse node's bandwidth/performance.

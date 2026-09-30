@@ -303,7 +303,8 @@ impl<T: BeaconChainTypes> NetworkService<T> {
         .await?;
 
         // Repopulate the DHT with stored ENR's if discovery is not disabled.
-        if !config.disable_discovery {
+        // With a discovery topic, stored ENR's are not used.
+        if !config.disable_discovery && config.discovery_topic.is_none() {
             let enrs_to_load = load_dht::<T::EthSpec, T::HotStore, T::ColdStore>(store.clone());
             debug!(
                 peers = enrs_to_load.len(),

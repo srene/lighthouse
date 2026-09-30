@@ -74,6 +74,10 @@ pub const FIND_NODE_QUERY_CLOSEST_PEERS: usize = 16;
 const DURATION_DIFFERENCE: Duration = Duration::from_millis(1);
 /// The capacity of the Discovery ENR cache.
 const ENR_CACHE_CAPACITY: usize = 50;
+/// Results after which a topic search ends before its timeout.
+const TOPIC_SEARCH_COUNT: usize = 100;
+/// Pause between two topic searches.
+const TOPIC_SEARCH_PAUSE: Duration = Duration::from_secs(2);
 
 /// A query has completed. This result contains a mapping of discovered peer IDs to the `min_ttl`
 /// of the peer if it is specified.
@@ -194,6 +198,13 @@ pub struct Discovery<E: EthSpec> {
     update_ports: UpdatePorts,
 
     spec: Arc<ChainSpec>,
+
+    /// The topic to register and search. With it, find_node queries are not used.
+    topic: Option<[u8; 32]>,
+
+    /// The topic search in progress. Its results arrive as discv5 events.
+    topic_search:
+        Option<Pin<Box<dyn Future<Output = Result<Vec<Enr>, discv5::QueryError>> + Send>>>,
 }
 
 impl<E: EthSpec> Discovery<E> {
@@ -225,6 +236,15 @@ impl<E: EthSpec> Discovery<E> {
         let mut discv5 = Discv5::new(local_enr, enr_key, config.discv5_config.clone())
             .map_err(|e| format!("Discv5 service failed. Error: {:?}", e))?;
 
+        let topic = config.discovery_topic.filter(|_| !config.disable_discovery);
+        if topic.is_some() {
+            // Discv5 adds the topic discovery entry: keep and store the record that is served.
+            let enr = discv5.local_enr();
+            enr::save_enr_to_disk(Path::new(&enr_dir), &enr);
+            info!(enr = enr.to_base64(), seq = enr.seq(), "ENR with topic discovery entry");
+            *network_globals.local_enr.write() = enr;
+        }
+
         // Add bootnodes to routing table
         for bootnode_enr in config.boot_nodes_enr.clone() {
             if bootnode_enr.node_id() == local_node_id {
@@ -254,6 +274,15 @@ impl<E: EthSpec> Discovery<E> {
         let event_stream = if !config.disable_discovery {
             discv5.start().map_err(|e| e.to_string()).await?;
             debug!("Discovery service started");
+            if let Some(topic) = topic {
+                discv5
+                    .register_topic(topic)
+                    .map_err(|e| format!("Could not register the topic: {e:?}"))?;
+                info!(
+                    topic = hex::encode(topic),
+                    "Topic registration started, topic search is the only peer source"
+                );
+            }
             EventStream::Awaiting(Box::pin(discv5.event_stream()))
         } else {
             EventStream::InActive
@@ -342,6 +371,8 @@ impl<E: EthSpec> Discovery<E> {
             update_ports,
             enr_dir,
             spec: Arc::new(spec.clone()),
+            topic,
+            topic_search: None,
         })
     }
 
@@ -365,7 +396,8 @@ impl<E: EthSpec> Discovery<E> {
     /// The maximum this can be is 16.
     pub fn discover_peers(&mut self, target_peers: usize) {
         // If the discv5 service isn't running or we are in the process of a query, don't bother queuing a new one.
-        if !self.started || self.find_peer_active {
+        // With a topic, peers come from the topic search only.
+        if !self.started || self.find_peer_active || self.topic.is_some() {
             return;
         }
         // Immediately start a FindNode query
@@ -377,8 +409,9 @@ impl<E: EthSpec> Discovery<E> {
 
     /// Processes a request to search for more peers on a subnet.
     pub fn discover_subnet_peers(&mut self, subnets_to_discover: Vec<SubnetDiscovery>) {
-        // If the discv5 service isn't running, ignore queries
-        if !self.started {
+        // If the discv5 service isn't running, ignore queries. With a topic, peers come from
+        // the topic search only.
+        if !self.started || self.topic.is_some() {
             return;
         }
         trace!(
@@ -1043,6 +1076,28 @@ impl<E: EthSpec> NetworkBehaviour for Discovery<E> {
             return Poll::Pending;
         }
 
+        // Keep a topic search running. Its results arrive as events below.
+        if let Some(topic) = self.topic {
+            let discv5 = &self.discv5;
+            let search = self.topic_search.get_or_insert_with(|| {
+                Box::pin(discv5.topic_search(topic, TOPIC_SEARCH_COUNT))
+            });
+            if let Poll::Ready(result) = search.poll_unpin(cx) {
+                match result {
+                    Ok(nodes) => info!(results = nodes.len(), "Topic search ended"),
+                    Err(e) => warn!(error = %e, "Topic search failed"),
+                }
+                let next = self.discv5.topic_search(topic, TOPIC_SEARCH_COUNT);
+                let mut next: Pin<Box<dyn Future<Output = _> + Send>> = Box::pin(async move {
+                    tokio::time::sleep(TOPIC_SEARCH_PAUSE).await;
+                    next.await
+                });
+                // Register the waker of the next search.
+                let _ = next.poll_unpin(cx);
+                self.topic_search = Some(next);
+            }
+        }
+
         // Process the query queue
         self.process_queue();
 
@@ -1107,6 +1162,41 @@ impl<E: EthSpec> NetworkBehaviour for Discovery<E> {
                             // A new UDP socket has been detected.
                             // NOTE: We assume libp2p itself can keep track of IP changes and we do
                             // not inform it about IP changes found via discovery.
+                        }
+                        discv5::Event::TopicRegistered { topic, registrar } => {
+                            info!(
+                                topic = hex::encode(topic),
+                                registrar = hex::encode(registrar.raw()),
+                                "Topic registered"
+                            );
+                        }
+                        discv5::Event::TopicNodesFound { nodes, .. } if self.topic.is_some() => {
+                            // Keep the results that pass the fork predicate of the find_node queries.
+                            let local = self.discv5.local_enr();
+                            let fork_digest = local.eth2().map(|e| e.fork_digest);
+                            let mut peers = HashMap::new();
+                            for enr in nodes {
+                                if enr.node_id() == local.node_id() {
+                                    continue;
+                                }
+                                let id = hex::encode(enr.node_id().raw());
+                                let same_fork = matches!(
+                                    (enr.eth2(), &fork_digest),
+                                    (Ok(e), Ok(d)) if e.fork_digest == *d
+                                );
+                                if same_fork && (enr.tcp4().is_some() || enr.tcp6().is_some()) {
+                                    info!(id, peer_id = %enr.peer_id(), "Topic search peer kept");
+                                    self.cached_enrs.insert(enr.peer_id(), enr.clone());
+                                    peers.insert(enr, None);
+                                } else {
+                                    info!(id, reason = "eth2 fork digest", "Topic search peer ignored");
+                                }
+                            }
+                            if !peers.is_empty() {
+                                return Poll::Ready(ToSwarm::GenerateEvent(DiscoveredPeers {
+                                    peers,
+                                }));
+                            }
                         }
                         _ => {} // Ignore all other discv5 server events
                     }

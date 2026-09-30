@@ -1450,6 +1450,12 @@ pub fn set_network_config(
 
     if parse_flag(cli_args, "enable-private-discovery") {
         config.discv5_config.table_filter = |_| true;
+        // Private networks can have all nodes in one /24.
+        config.discv5_config.ip_limit = false;
+    }
+
+    if let Some(topic) = cli_args.get_one::<String>("discovery-topic") {
+        config.discovery_topic = Some(lighthouse_network::parse_discovery_topic(topic));
     }
 
     // Light client server config.

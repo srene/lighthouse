@@ -105,6 +105,7 @@ pub use crate::types::{
 pub use prometheus_client;
 
 pub use config::Config as NetworkConfig;
+pub use config::parse_discovery_topic;
 pub use discovery::Eth2Enr;
 pub use discv5;
 pub use enr;
