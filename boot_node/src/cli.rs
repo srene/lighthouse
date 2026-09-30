@@ -30,6 +30,14 @@ pub fn cli_app() -> Command {
                 .display_order(0)
         )
         .arg(
+            Arg::new("topic")
+                .long("topic")
+                .value_name("TOPIC")
+                .help("A TopDisc topic (32 bytes, hex) to advertise and search. Off by default.")
+                .action(ArgAction::Set)
+                .display_order(0)
+        )
+        .arg(
             Arg::new("port")
                 .long("port")
                 .value_name("PORT")

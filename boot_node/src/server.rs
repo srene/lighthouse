@@ -13,6 +13,16 @@ use network_utils::enr_ext::EnrExt;
 use tracing::{info, warn};
 use types::EthSpec;
 
+/// Results after which a topic search ends before its timeout.
+const TOPIC_SEARCH_COUNT: usize = 100;
+
+fn node_ids(nodes: &[discv5::Enr]) -> Vec<String> {
+    nodes
+        .iter()
+        .map(|enr| hex::encode(enr.node_id().raw()))
+        .collect()
+}
+
 pub async fn run<E: EthSpec>(
     lh_matches: &ArgMatches,
     bn_matches: &ArgMatches,
@@ -97,6 +107,24 @@ pub async fn run<E: EthSpec>(
         let _ = discv5.find_node(NodeId::random()).await;
     }
 
+    // TopDisc: advertise the topic given with --topic and search it in a loop
+    let topic: Option<[u8; 32]> = match bn_matches.get_one::<String>("topic") {
+        Some(t) => Some(
+            hex::decode(t.trim_start_matches("0x"))
+                .ok()
+                .and_then(|bytes| bytes.try_into().ok())
+                .ok_or("--topic must be 32 bytes in hex")?,
+        ),
+        None => None,
+    };
+    if let Some(topic) = topic {
+        discv5
+            .register_topic(topic)
+            .map_err(|e| format!("Could not register the topic: {e:?}"))?;
+        info!(topic = hex::encode(topic), "Topic registration started");
+    }
+    let mut topic_search = topic.map(|t| Box::pin(discv5.topic_search(t, TOPIC_SEARCH_COUNT)));
+
     // respond with metrics every 10 seconds
     let mut metric_interval = tokio::time::interval(tokio::time::Duration::from_secs(10));
 
@@ -142,6 +170,21 @@ pub async fn run<E: EthSpec>(
                 );
 
             }
+            result = async { topic_search.as_mut().expect("checked").await }, if topic_search.is_some() => {
+                let topic = topic.expect("a search has a topic");
+                match result {
+                    Ok(nodes) => {
+                        info!(results = nodes.len(), ids = ?node_ids(&nodes), "Topic search ended");
+                        topic_search = Some(Box::pin(discv5.topic_search(topic, TOPIC_SEARCH_COUNT)));
+                    }
+                    Err(e) => {
+                        warn!(error = ?e, "Topic search failed");
+                        topic_search = None;
+                    }
+                }
+                let ads = discv5.local_topic_nodes(topic);
+                info!(count = ads.len(), ids = ?node_ids(&ads), "Topic ads held");
+            }
             Some(event) = event_stream.recv() => {
                 match event {
                     discv5::Event::Discovered(_enr) => {
@@ -150,6 +193,12 @@ pub async fn run<E: EthSpec>(
                     }
                     discv5::Event::SocketUpdated(socket_addr) => {
                         info!(%socket_addr, "Advertised socket address updated");
+                    }
+                    discv5::Event::TopicRegistered { topic, registrar } => {
+                        info!(topic = hex::encode(topic), registrar = hex::encode(registrar.raw()), "Topic registered");
+                    }
+                    discv5::Event::TopicNodesFound { topic, nodes } => {
+                        info!(topic = hex::encode(topic), ids = ?node_ids(&nodes), "Topic nodes found");
                     }
                     _ => {} // Ignore
                 }
