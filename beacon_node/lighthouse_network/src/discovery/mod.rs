@@ -9,7 +9,8 @@ pub(crate) mod enr;
 use crate::service::TARGET_SUBNET_PEERS;
 use crate::{ClearDialError, metrics};
 use crate::{Enr, NetworkConfig, NetworkGlobals, Subnet, SubnetDiscovery};
-use discv5::Discv5;
+use discv5::topic::TopicId;
+use discv5::{Discv5, TopicSearchStream};
 pub use enr::{CombinedKey, Eth2Enr, NodeId, build_enr, load_enr_from_disk, use_or_load_enr};
 pub use libp2p::identity::{Keypair, PublicKey};
 use network_utils::enr_ext::{CombinedKeyExt, EnrExt, peer_id_to_node_id};
@@ -57,6 +58,8 @@ pub const ENR_FILENAME: &str = "enr.dat";
 const TARGET_PEERS_FOR_GROUPED_QUERY: usize = 6;
 /// Number of times to attempt a discovery request.
 const MAX_DISCOVERY_RETRY: usize = 3;
+/// The maximum number of topic search results handled per search in one poll.
+const MAX_TOPIC_RESULTS_PER_POLL: usize = 16;
 /// The maximum number of concurrent subnet discovery queries.
 /// Note: we always allow a single FindPeers query, so we would be
 /// running a maximum of `MAX_CONCURRENT_SUBNET_QUERIES + 1`
@@ -185,6 +188,13 @@ pub struct Discovery<E: EthSpec> {
     /// The discv5 event stream.
     event_stream: EventStream,
 
+    /// Topics to register and search for once the event stream is ready.
+    queued_topic_registrations: Vec<TopicId>,
+    queued_topic_searches: Vec<TopicId>,
+
+    /// Active topic searches.
+    topic_searches: Vec<(TopicId, TopicSearchStream)>,
+
     /// Indicates if the discovery service has been started. When the service is disabled, this is
     /// always false.
     pub started: bool,
@@ -210,6 +220,7 @@ impl<E: EthSpec> Discovery<E> {
 
         let local_enr = network_globals.local_enr.read().clone();
         let local_node_id = local_enr.node_id();
+        let local_seq = local_enr.seq();
 
         info!(
             enr = local_enr.to_base64(), seq = local_enr.seq(), id = %local_enr.node_id(),
@@ -223,6 +234,12 @@ impl<E: EthSpec> Discovery<E> {
 
         let mut discv5 = Discv5::new(local_enr, enr_key, config.discv5_config.clone())
             .map_err(|e| format!("Discv5 service failed. Error: {:?}", e))?;
+
+        // Discv5 adds the topic discovery field if the ENR lacks it.
+        if discv5.local_enr().seq() != local_seq {
+            *network_globals.local_enr.write() = discv5.local_enr();
+            enr::save_enr_to_disk(Path::new(&enr_dir), &discv5.local_enr());
+        }
 
         // Add bootnodes to routing table
         for bootnode_enr in config.boot_nodes_enr.clone() {
@@ -255,6 +272,9 @@ impl<E: EthSpec> Discovery<E> {
             debug!("Discovery service started");
             EventStream::Awaiting(Box::pin(discv5.event_stream()))
         } else {
+            if !config.topic_register.is_empty() || !config.topic_search.is_empty() {
+                warn!("Topic registrations and searches are ignored because discovery is disabled");
+            }
             EventStream::InActive
         };
 
@@ -337,6 +357,9 @@ impl<E: EthSpec> Discovery<E> {
             active_queries: FuturesUnordered::new(),
             discv5,
             event_stream,
+            queued_topic_registrations: config.topic_register.clone(),
+            queued_topic_searches: config.topic_search.clone(),
+            topic_searches: Vec::new(),
             started: !config.disable_discovery,
             update_ports,
             enr_dir,
@@ -989,6 +1012,54 @@ impl<E: EthSpec> Discovery<E> {
         None
     }
 
+    /// Starts the topic registrations and searches. Called once the event stream is ready, as
+    /// registrations are reported through it.
+    fn start_topic_discovery(&mut self) {
+        for topic in std::mem::take(&mut self.queued_topic_registrations) {
+            match self.discv5.register_topic(topic) {
+                Ok(()) => info!(topic = %hex::encode(topic), "Topic registration started"),
+                Err(e) => {
+                    error!(topic = %hex::encode(topic), error = %e, "Topic registration failed")
+                }
+            }
+        }
+        for topic in std::mem::take(&mut self.queued_topic_searches) {
+            match self.discv5.topic_search_stream(topic) {
+                Ok(stream) => {
+                    info!(topic = %hex::encode(topic), "Topic search started");
+                    self.topic_searches.push((topic, stream));
+                }
+                Err(e) => error!(topic = %hex::encode(topic), error = %e, "Topic search failed"),
+            }
+        }
+    }
+
+    /// Logs the nodes found by the topic searches.
+    fn poll_topic_searches(&mut self, cx: &mut Context) {
+        self.topic_searches.retain_mut(|(topic, stream)| {
+            for _ in 0..MAX_TOPIC_RESULTS_PER_POLL {
+                match stream.poll_next_unpin(cx) {
+                    Poll::Ready(Some(enr)) => {
+                        info!(
+                            topic = %hex::encode(*topic),
+                            id = %hex::encode(enr.node_id().raw()),
+                            peer_id = %enr.peer_id(),
+                            "Found topic node"
+                        );
+                        metrics::inc_counter(&metrics::DISCOVERY_TOPIC_NODES_FOUND);
+                    }
+                    Poll::Ready(None) => {
+                        warn!(topic = %hex::encode(*topic), "Topic search ended");
+                        return false;
+                    }
+                    Poll::Pending => return true,
+                }
+            }
+            cx.waker().wake_by_ref();
+            true
+        });
+    }
+
     /// Drives the queries returning any results from completed queries.
     fn poll_queries(&mut self, cx: &mut Context) -> Option<HashMap<Enr, Option<Instant>>> {
         while let Poll::Ready(Some(query_result)) = self.active_queries.poll_next_unpin(cx) {
@@ -1047,6 +1118,8 @@ impl<E: EthSpec> NetworkBehaviour for Discovery<E> {
         // Process the query queue
         self.process_queue();
 
+        self.poll_topic_searches(cx);
+
         // Drive the queries and return any results from completed queries
         if let Some(peers) = self.poll_queries(cx) {
             // return the result to the peer manager
@@ -1062,6 +1135,9 @@ impl<E: EthSpec> NetworkBehaviour for Discovery<E> {
                         Ok(stream) => {
                             debug!("Discv5 event stream ready");
                             self.event_stream = EventStream::Present(stream);
+                            self.start_topic_discovery();
+                            // poll the new topic searches
+                            cx.waker().wake_by_ref();
                         }
                         Err(e) => {
                             crit!(error = %e, "Discv5 event stream failed");
@@ -1108,6 +1184,14 @@ impl<E: EthSpec> NetworkBehaviour for Discovery<E> {
                             // A new UDP socket has been detected.
                             // NOTE: We assume libp2p itself can keep track of IP changes and we do
                             // not inform it about IP changes found via discovery.
+                        }
+                        discv5::Event::TopicRegistered { topic, registrar } => {
+                            info!(
+                                topic = %hex::encode(topic),
+                                registrar = %hex::encode(registrar.raw()),
+                                "Topic registered"
+                            );
+                            metrics::inc_counter(&metrics::DISCOVERY_TOPIC_REGISTERED);
                         }
                         _ => {} // Ignore all other discv5 server events
                     }
@@ -1246,21 +1330,32 @@ mod tests {
     use super::*;
     use crate::rpc::methods::{MetaData, MetaDataV3};
     use libp2p::identity::secp256k1;
+    use network_utils::unused_port::{unused_tcp4_port, unused_udp4_port};
     use ssz_types::BitVector;
+    use std::net::Ipv4Addr;
     use types::{Spec, SubnetId};
 
     type E = Spec;
 
     async fn build_discovery() -> Discovery<E> {
-        let spec = Arc::new(ChainSpec::default());
         let keypair = secp256k1::Keypair::generate();
         let mut config = NetworkConfig::default();
         config.set_listening_addr(network_utils::listen_addr::ListenAddress::unused_v4_ports());
+        build_discovery_with(keypair, config, |_, _| {}).await
+    }
+
+    /// Builds discovery with the local ENR changed by `modify_enr` before discovery starts.
+    async fn build_discovery_with(
+        keypair: secp256k1::Keypair,
+        config: NetworkConfig,
+        modify_enr: impl FnOnce(&mut Enr, &CombinedKey),
+    ) -> Discovery<E> {
+        let spec = Arc::new(ChainSpec::default());
         let config = Arc::new(config);
         let enr_key: CombinedKey = CombinedKey::from_secp256k1(&keypair);
         let next_fork_digest = [0; 4];
         let custody_group_count = spec.custody_requirement;
-        let enr: Enr = build_enr::<E>(
+        let mut enr: Enr = build_enr::<E>(
             &enr_key,
             &config,
             &EnrForkId::default(),
@@ -1269,6 +1364,7 @@ mod tests {
             &spec,
         )
         .unwrap();
+        modify_enr(&mut enr, &enr_key);
         let globals = NetworkGlobals::new(
             enr,
             MetaData::V3(MetaDataV3 {
@@ -1286,6 +1382,113 @@ mod tests {
         Discovery::new(keypair, &config, Arc::new(globals), &spec)
             .await
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_local_enr_has_topic_discovery() {
+        let discovery = build_discovery().await;
+        let enr = discovery.network_globals.local_enr();
+        assert!(discv5::topic::supports_topic_discovery(&enr));
+        assert_eq!(enr, discovery.local_enr());
+    }
+
+    #[tokio::test]
+    async fn test_local_enr_without_topic_discovery_is_updated() {
+        let network_dir = tempfile::tempdir().unwrap();
+        let mut config = NetworkConfig::default();
+        config.set_listening_addr(network_utils::listen_addr::ListenAddress::unused_v4_ports());
+        config.network_dir = network_dir.path().to_path_buf();
+        let mut seq = 0;
+        // As loaded from an `enr.dat` written without the topic discovery field.
+        let discovery =
+            build_discovery_with(secp256k1::Keypair::generate(), config, |enr, enr_key| {
+                enr.remove_key(discv5::topic::TOPIC_DISCOVERY_ENR_KEY, enr_key)
+                    .unwrap();
+                seq = enr.seq();
+            })
+            .await;
+        let enr = discovery.network_globals.local_enr();
+        assert!(discv5::topic::supports_topic_discovery(&enr));
+        assert_eq!(enr.seq(), seq + 1);
+        assert_eq!(enr, discovery.local_enr());
+        assert_eq!(load_enr_from_disk(network_dir.path()).unwrap(), enr);
+    }
+
+    /// Starts a plain discv5 node on loopback.
+    async fn start_loopback_node() -> Discv5 {
+        let port = unused_udp4_port().unwrap();
+        let enr_key = CombinedKey::generate_secp256k1();
+        let enr = Enr::builder()
+            .ip4(Ipv4Addr::LOCALHOST)
+            .udp4(port)
+            .build(&enr_key)
+            .unwrap();
+        let listen_config = discv5::ListenConfig::from_ip(Ipv4Addr::LOCALHOST.into(), port);
+        let mut discv5 = Discv5::new(
+            enr,
+            enr_key,
+            discv5::ConfigBuilder::new(listen_config).build(),
+        )
+        .unwrap();
+        discv5.start().await.unwrap();
+        discv5
+    }
+
+    #[tokio::test]
+    async fn test_topic_registration_and_search() {
+        let registered_topic = discv5::topic::topic_id("test/register");
+        let searched_topic = discv5::topic::topic_id("test/search");
+        fn counter(counter: &metrics::Result<metrics::IntCounter>) -> u64 {
+            counter.as_ref().unwrap().get()
+        }
+        let registered = counter(&metrics::DISCOVERY_TOPIC_REGISTERED);
+        let found = counter(&metrics::DISCOVERY_TOPIC_NODES_FOUND);
+
+        // The registrar holds the ad of the advertiser and is the only boot node of discovery.
+        let registrar = start_loopback_node().await;
+        let advertiser = start_loopback_node().await;
+        advertiser.add_enr(registrar.local_enr()).unwrap();
+        advertiser.register_topic(searched_topic).unwrap();
+
+        let network_dir = tempfile::tempdir().unwrap();
+        let mut config = NetworkConfig::default();
+        config.set_ipv4_listening_address(
+            Ipv4Addr::LOCALHOST,
+            unused_tcp4_port().unwrap(),
+            unused_udp4_port().unwrap(),
+            unused_udp4_port().unwrap(),
+        );
+        config.enr_address = (Some(Ipv4Addr::LOCALHOST), None);
+        config.discv5_config.table_filter = |_| true;
+        config.discv5_config.enable_packet_filter = false;
+        config.network_dir = network_dir.path().to_path_buf();
+        config.boot_nodes_enr = vec![registrar.local_enr()];
+        config.topic_register = vec![registered_topic];
+        config.topic_search = vec![searched_topic];
+        let mut discovery =
+            build_discovery_with(secp256k1::Keypair::generate(), config, |_, _| {}).await;
+
+        tokio::time::timeout(
+            Duration::from_secs(60),
+            std::future::poll_fn(|cx| {
+                while discovery.poll(cx).is_ready() {}
+                if counter(&metrics::DISCOVERY_TOPIC_REGISTERED) > registered
+                    && counter(&metrics::DISCOVERY_TOPIC_NODES_FOUND) > found
+                {
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
+                }
+            }),
+        )
+        .await
+        .expect("the topic should be registered and the advertiser found");
+        assert!(
+            registrar
+                .local_topic_nodes(registered_topic)
+                .iter()
+                .any(|enr| enr.node_id() == discovery.local_enr().node_id())
+        );
     }
 
     #[tokio::test]

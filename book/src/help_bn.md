@@ -416,6 +416,13 @@ Options:
           Override the OpenTelemetry service name. Defaults to 'lighthouse-bn'
           for beacon node, 'lighthouse-vc' for validator client, or 'lighthouse'
           for other subcommands.
+      --topic-register <TOPIC>
+          Advertise this node for a topic through topic discovery. A topic is
+          `0x` followed by 64 hex digits, or else a name whose SHA-256 hash is
+          used. Takes a comma-separated list and can be given more than once.
+      --topic-search <TOPIC>
+          Search for the nodes advertising a topic through topic discovery and
+          log each one found. Takes topics as --topic-register does.
       --trusted-peers <TRUSTED_PEERS>
           One or more comma-delimited trusted peer ids which always have the
           highest score according to the peer scoring system.

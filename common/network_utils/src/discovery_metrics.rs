@@ -34,6 +34,21 @@ pub static DISCOVERY_SESSIONS: LazyLock<Result<IntGauge>> = LazyLock::new(|| {
     )
 });
 
+pub static DISCOVERY_TOPIC_MESSAGES: LazyLock<Result<IntGaugeVec>> = LazyLock::new(|| {
+    try_create_int_gauge_vec(
+        "discv5_topic_messages",
+        "The number of topic discovery messages sent and received",
+        &["message", "direction"],
+    )
+});
+pub static DISCOVERY_TOPIC_EVENTS: LazyLock<Result<IntGaugeVec>> = LazyLock::new(|| {
+    try_create_int_gauge_vec(
+        "discv5_topic_events",
+        "The number of topic discovery tickets, rejections and invalid records",
+        &["event"],
+    )
+});
+
 pub fn scrape_discovery_metrics() {
     let metrics = discv5::Discv5::metrics();
     set_float_gauge(&DISCOVERY_REQS, metrics.unsolicited_requests_per_second);
@@ -42,4 +57,35 @@ pub fn scrape_discovery_metrics() {
     set_gauge_vec(&DISCOVERY_BYTES, &["outbound"], metrics.bytes_sent as i64);
     set_gauge_vec(&NAT_OPEN, &["discv5_ipv4"], metrics.ipv4_contactable as i64);
     set_gauge_vec(&NAT_OPEN, &["discv5_ipv6"], metrics.ipv6_contactable as i64);
+
+    let topic = metrics.topic;
+    for (message, direction, value) in [
+        ("regtopic", "outbound", topic.regtopic_sent),
+        ("regtopic", "inbound", topic.regtopic_recv),
+        ("topicquery", "outbound", topic.topicquery_sent),
+        ("topicquery", "inbound", topic.topicquery_recv),
+        ("regconfirmation", "inbound", topic.regconfirmation_recv),
+        ("topicnodes", "inbound", topic.topicnodes_recv),
+    ] {
+        set_gauge_vec(
+            &DISCOVERY_TOPIC_MESSAGES,
+            &[message, direction],
+            value as i64,
+        );
+    }
+    for (event, value) in [
+        ("regtopic_rejected", topic.regtopic_rejected),
+        ("ticket_issued", topic.ticket_issued),
+        ("ticket_recv", topic.ticket_recv),
+        ("rejection_recv", topic.rejection_recv),
+        ("ticket_early", topic.ticket_early),
+        ("ticket_late", topic.ticket_late),
+        ("ticket_expired", topic.ticket_expired),
+        ("ticket_replayed", topic.ticket_replayed),
+        ("ticket_invalid", topic.ticket_invalid),
+        ("ticket_foreign", topic.ticket_foreign),
+        ("invalid_records", topic.invalid_records),
+    ] {
+        set_gauge_vec(&DISCOVERY_TOPIC_EVENTS, &[event], value as i64);
+    }
 }

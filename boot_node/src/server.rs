@@ -5,11 +5,15 @@ use crate::config::BootNodeConfigSerialization;
 use clap::ArgMatches;
 use enr::NodeId;
 use eth2_network_config::Eth2NetworkConfig;
+use futures::StreamExt;
+use futures::future::OptionFuture;
+use futures::stream::SelectAll;
 use lighthouse_network::{
     Eth2Enr,
     discv5::{self, Discv5},
 };
 use network_utils::enr_ext::EnrExt;
+use std::pin::pin;
 use tracing::{info, warn};
 use types::EthSpec;
 
@@ -38,8 +42,14 @@ pub async fn run<E: EthSpec>(
         local_enr,
         local_key,
         discv5_config,
+        topic_register,
+        topic_search,
         ..
     } = config;
+
+    // construct the discv5 server, which adds the topic discovery field if the ENR lacks it
+    let mut discv5: Discv5 = Discv5::new(local_enr, local_key, discv5_config.clone()).unwrap();
+    let local_enr = discv5.local_enr();
 
     // Print out useful information about the generated ENR
 
@@ -67,9 +77,6 @@ pub async fn run<E: EthSpec>(
     info!(enr = ?local_enr, "Enr details");
     info!(multiaddrs = ?local_enr.multiaddr_p2p(), "Contact information");
 
-    // construct the discv5 server
-    let mut discv5: Discv5 = Discv5::new(local_enr.clone(), local_key, discv5_config).unwrap();
-
     // If there are any bootnodes add them to the routing table
     for enr in boot_nodes {
         info!(
@@ -91,16 +98,7 @@ pub async fn run<E: EthSpec>(
         return Err(format!("Could not start discv5 server: {e:?}"));
     }
 
-    // if there are peers in the local routing table, establish a session by running a query
-    if !discv5.table_entries_id().is_empty() {
-        info!("Executing bootstrap query...");
-        let _ = discv5.find_node(NodeId::random()).await;
-    }
-
-    // respond with metrics every 10 seconds
-    let mut metric_interval = tokio::time::interval(tokio::time::Duration::from_secs(10));
-
-    // get an event stream
+    // get an event stream, before the topic registrations that report through it
     let mut event_stream = match discv5.event_stream().await {
         Ok(stream) => stream,
         Err(e) => {
@@ -108,9 +106,40 @@ pub async fn run<E: EthSpec>(
         }
     };
 
+    for topic in topic_register {
+        match discv5.register_topic(topic) {
+            Ok(()) => info!(topic = %hex::encode(topic), "Topic registration started"),
+            Err(e) => warn!(topic = %hex::encode(topic), error = %e, "Topic registration failed"),
+        }
+    }
+    let mut topic_searches = SelectAll::new();
+    for topic in topic_search {
+        match discv5.topic_search_stream(topic) {
+            Ok(stream) => {
+                info!(topic = %hex::encode(topic), "Topic search started");
+                topic_searches.push(stream.map(move |enr| (topic, enr)));
+            }
+            Err(e) => warn!(topic = %hex::encode(topic), error = %e, "Topic search failed"),
+        }
+    }
+
+    // if there are peers in the local routing table, establish a session by running a query,
+    // driven by the event loop so that events are consumed while it runs
+    let mut bootstrap = pin!(OptionFuture::from(
+        (!discv5.table_entries_id().is_empty()).then(|| {
+            info!("Executing bootstrap query...");
+            discv5.find_node(NodeId::random())
+        })
+    ));
+    let mut bootstrapped = false;
+
+    // respond with metrics every 10 seconds
+    let mut metric_interval = tokio::time::interval(tokio::time::Duration::from_secs(10));
+
     // listen for events
     loop {
         tokio::select! {
+            _ = &mut bootstrap, if !bootstrapped => bootstrapped = true,
             _ = metric_interval.tick() => {
                 // Get some ipv4/ipv6 stats to add in the metrics.
                 let mut ipv4_only_reachable: usize = 0;
@@ -142,6 +171,14 @@ pub async fn run<E: EthSpec>(
                 );
 
             }
+            Some((topic, enr)) = topic_searches.next(), if !topic_searches.is_empty() => {
+                info!(
+                    topic = %hex::encode(topic),
+                    id = %hex::encode(enr.node_id().raw()),
+                    peer_id = %enr.peer_id(),
+                    "Found topic node"
+                );
+            }
             Some(event) = event_stream.recv() => {
                 match event {
                     discv5::Event::Discovered(_enr) => {
@@ -150,6 +187,13 @@ pub async fn run<E: EthSpec>(
                     }
                     discv5::Event::SocketUpdated(socket_addr) => {
                         info!(%socket_addr, "Advertised socket address updated");
+                    }
+                    discv5::Event::TopicRegistered { topic, registrar } => {
+                        info!(
+                            topic = %hex::encode(topic),
+                            registrar = %hex::encode(registrar.raw()),
+                            "Topic registered"
+                        );
                     }
                     _ => {} // Ignore
                 }

@@ -3,7 +3,7 @@ use boot_node::config::BootNodeConfigSerialization;
 use crate::exec::{CommandLineTestExec, CompletedTest};
 use clap::ArgMatches;
 use clap_utils::get_eth2_network_config;
-use lighthouse_network::{Enr, discovery::ENR_FILENAME};
+use lighthouse_network::{Enr, discovery::ENR_FILENAME, discv5::topic::topic_id};
 use network_utils::unused_port::unused_udp4_port;
 use std::fs::File;
 use std::io::Write;
@@ -159,6 +159,44 @@ fn enable_enr_auto_update_flag() {
         .run_with_ip()
         .with_config(|config| {
             assert!(config.enable_enr_auto_update);
+        });
+}
+
+#[test]
+fn enable_private_discovery_flag() {
+    CommandLineTest::new()
+        .run_with_ip()
+        .with_config(|config| assert!(!config.enable_private_discovery));
+    CommandLineTest::new()
+        .flag("enable-private-discovery", None)
+        .run_with_ip()
+        .with_config(|config| assert!(config.enable_private_discovery));
+}
+
+#[test]
+fn topic_register_flag() {
+    let hash = format!("0x{}", "01".repeat(32));
+    CommandLineTest::new()
+        .flag("topic-register", Some("d79/cl,a"))
+        .flag("topic-register", Some(&hash))
+        .run_with_ip()
+        .with_config(|config| {
+            assert_eq!(
+                config.topic_register,
+                vec![topic_id("d79/cl"), topic_id("a"), [1; 32]]
+            );
+            assert!(config.topic_search.is_empty());
+        });
+}
+
+#[test]
+fn topic_search_flag() {
+    CommandLineTest::new()
+        .flag("topic-search", Some("d79/cl"))
+        .run_with_ip()
+        .with_config(|config| {
+            assert_eq!(config.topic_search, vec![topic_id("d79/cl")]);
+            assert!(config.topic_register.is_empty());
         });
 }
 

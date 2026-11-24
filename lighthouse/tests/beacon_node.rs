@@ -10,6 +10,7 @@ use beacon_node::{
 use beacon_processor::BeaconProcessorConfig;
 use eth2_network_config::Eth2NetworkConfig;
 use lighthouse_network::PeerId;
+use lighthouse_network::discv5::topic::topic_id;
 use network_utils::unused_port::{
     unused_tcp4_port, unused_tcp6_port, unused_udp4_port, unused_udp6_port,
 };
@@ -1369,6 +1370,31 @@ fn boot_nodes_multiaddr_flag() {
                 config.network.boot_nodes_multiaddr[1].to_string(),
                 multiaddr[1]
             );
+        });
+}
+#[test]
+fn topic_register_flag() {
+    let hash = format!("0x{}", "01".repeat(32));
+    CommandLineTest::new()
+        .flag("topic-register", Some("d79/cl,a"))
+        .flag("topic-register", Some(&hash))
+        .run_with_zero_port()
+        .with_config(|config| {
+            assert_eq!(
+                config.network.topic_register,
+                vec![topic_id("d79/cl"), topic_id("a"), [1; 32]]
+            );
+            assert!(config.network.topic_search.is_empty());
+        });
+}
+#[test]
+fn topic_search_flag() {
+    CommandLineTest::new()
+        .flag("topic-search", Some("d79/cl"))
+        .run_with_zero_port()
+        .with_config(|config| {
+            assert_eq!(config.network.topic_search, vec![topic_id("d79/cl")]);
+            assert!(config.network.topic_register.is_empty());
         });
 }
 #[test]

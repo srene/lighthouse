@@ -5,6 +5,7 @@ use crate::{Enr, PeerIdSerialized};
 use directory::{
     DEFAULT_BEACON_NODE_DIR, DEFAULT_HARDCODED_NETWORK, DEFAULT_NETWORK_DIR, DEFAULT_ROOT_DIR,
 };
+use discv5::topic::TopicId;
 use if_addrs::get_if_addrs;
 use libp2p::{Multiaddr, gossipsub};
 use network_utils::listen_addr::{ListenAddr, ListenAddress};
@@ -153,6 +154,12 @@ pub struct Config {
 
     /// Whether to enable partial data column support.
     pub enable_partial_columns: bool,
+
+    /// Topics to advertise through topic discovery.
+    pub topic_register: Vec<TopicId>,
+
+    /// Topics to search for through topic discovery.
+    pub topic_search: Vec<TopicId>,
 }
 
 impl Config {
@@ -381,8 +388,24 @@ impl Default for Config {
             idontwant_message_size_threshold: DEFAULT_IDONTWANT_MESSAGE_SIZE_THRESHOLD,
             advertise_false_custody_group_count: None,
             enable_partial_columns: false,
+            topic_register: vec![],
+            topic_search: vec![],
         }
     }
+}
+
+/// Parses a topic as `0x` followed by 64 hex digits, or else as a name hashed with SHA-256.
+pub fn parse_topic(topic: &str) -> Result<TopicId, String> {
+    if topic.is_empty() {
+        return Err("Empty topic".to_string());
+    }
+    if topic.len() == 66
+        && let Some(Ok(bytes)) = topic.strip_prefix("0x").map(hex::decode)
+        && let Ok(id) = bytes.try_into()
+    {
+        return Ok(id);
+    }
+    Ok(discv5::topic::topic_id(topic))
 }
 
 /// Controls sizes of gossipsub meshes to tune a Lighthouse node's bandwidth/performance.
@@ -611,4 +634,30 @@ pub const fn is_global_ipv6(addr: &Ipv6Addr) -> bool {
             || is_documentation(addr)
             || is_unique_local(addr)
             || is_unicast_link_local(addr))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_topic_name_or_hash() {
+        let abc = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        let abc_id: TopicId = hex::decode(abc).unwrap().try_into().unwrap();
+        assert_eq!(parse_topic("abc"), Ok(abc_id));
+        assert_eq!(parse_topic(&format!("0x{abc}")), Ok(abc_id));
+        assert_eq!(
+            parse_topic(&format!("0x{}", abc.to_uppercase())),
+            Ok(abc_id)
+        );
+        // Anything else is a name, as in devp2p.
+        for name in [
+            abc.to_string(),
+            format!("0x{}", &abc[2..]),
+            format!("0x{}zz", &abc[2..]),
+        ] {
+            assert_eq!(parse_topic(&name), Ok(discv5::topic::topic_id(&name)));
+        }
+        assert!(parse_topic("").is_err());
+    }
 }

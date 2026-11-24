@@ -3,7 +3,7 @@ use bytes::Bytes;
 use clap::ArgMatches;
 use enr::CombinedKey;
 use eth2_network_config::Eth2NetworkConfig;
-use lighthouse_network::discv5::{self, Enr};
+use lighthouse_network::discv5::{self, Enr, topic::TopicId};
 use lighthouse_network::{
     NetworkConfig,
     discovery::{load_enr_from_disk, use_or_load_enr},
@@ -25,6 +25,9 @@ pub struct BootNodeConfig<E: EthSpec> {
     pub local_enr: Enr,
     pub local_key: CombinedKey,
     pub discv5_config: discv5::Config,
+    pub enable_private_discovery: bool,
+    pub topic_register: Vec<TopicId>,
+    pub topic_search: Vec<TopicId>,
     phantom: PhantomData<E>,
 }
 
@@ -158,6 +161,10 @@ impl<E: EthSpec> BootNodeConfig<E> {
                 if let Some(enr_fork_bytes) = enr_fork {
                     builder.add_value::<Bytes>("eth2", &enr_fork_bytes.into());
                 }
+                builder.add_value(
+                    discv5::topic::TOPIC_DISCOVERY_ENR_KEY,
+                    &discv5::topic::TOPIC_DISCOVERY_VERSION,
+                );
                 builder
                     .build(&local_key)
                     .map_err(|e| format!("Failed to build ENR: {:?}", e))?
@@ -172,6 +179,9 @@ impl<E: EthSpec> BootNodeConfig<E> {
             local_enr,
             local_key,
             discv5_config: network_config.discv5_config,
+            enable_private_discovery: matches.get_flag("enable-private-discovery"),
+            topic_register: network_config.topic_register,
+            topic_search: network_config.topic_search,
             phantom: PhantomData,
         })
     }
@@ -189,6 +199,9 @@ pub struct BootNodeConfigSerialization {
     pub local_enr: Enr,
     pub disable_packet_filter: bool,
     pub enable_enr_auto_update: bool,
+    pub enable_private_discovery: bool,
+    pub topic_register: Vec<TopicId>,
+    pub topic_search: Vec<TopicId>,
 }
 
 impl BootNodeConfigSerialization {
@@ -200,6 +213,9 @@ impl BootNodeConfigSerialization {
             local_enr,
             local_key: _,
             discv5_config,
+            enable_private_discovery,
+            topic_register,
+            topic_search,
             phantom: _,
         } = config;
 
@@ -242,6 +258,9 @@ impl BootNodeConfigSerialization {
             local_enr: local_enr.clone(),
             disable_packet_filter: !discv5_config.enable_packet_filter,
             enable_enr_auto_update: discv5_config.enr_update,
+            enable_private_discovery: *enable_private_discovery,
+            topic_register: topic_register.clone(),
+            topic_search: topic_search.clone(),
         }
     }
 }

@@ -12,6 +12,7 @@ clap_utils = { workspace = true }
 enr = { workspace = true }
 eth2_network_config = { workspace = true }
 ethereum_ssz = { workspace = true }
+futures = { workspace = true }
 hex = { workspace = true }
 lighthouse_network = { workspace = true }
 log = { workspace = true }

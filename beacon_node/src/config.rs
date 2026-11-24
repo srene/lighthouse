@@ -13,7 +13,7 @@ use client::{ClientConfig, ClientGenesis};
 use directory::{DEFAULT_BEACON_NODE_DIR, DEFAULT_NETWORK_DIR, DEFAULT_ROOT_DIR};
 use environment::RuntimeContext;
 use execution_layer::DEFAULT_JWT_FILE;
-use lighthouse_network::{Enr, Multiaddr, NetworkConfig, PeerIdSerialized};
+use lighthouse_network::{Enr, Multiaddr, NetworkConfig, PeerIdSerialized, parse_topic};
 use network_utils::listen_addr::ListenAddress;
 use sensitive_url::SensitiveUrl;
 use std::collections::HashSet;
@@ -1491,6 +1491,20 @@ pub fn set_network_config(
 
     if parse_flag(cli_args, "enable-private-discovery") {
         config.discv5_config.table_filter = |_| true;
+    }
+
+    if let Some(topics) = cli_args.get_many::<String>("topic-register") {
+        config.topic_register = topics
+            .map(|topic| parse_topic(topic))
+            .collect::<Result<_, _>>()
+            .map_err(|e| format!("Invalid --topic-register: {e}"))?;
+    }
+
+    if let Some(topics) = cli_args.get_many::<String>("topic-search") {
+        config.topic_search = topics
+            .map(|topic| parse_topic(topic))
+            .collect::<Result<_, _>>()
+            .map_err(|e| format!("Invalid --topic-search: {e}"))?;
     }
 
     // Light client server config.

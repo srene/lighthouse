@@ -112,6 +112,35 @@ pub fn cli_app() -> Command {
                 .display_order(0)
         )
         .arg(
+            Arg::new("enable-private-discovery")
+                .action(ArgAction::SetTrue)
+                .help_heading(FLAG_HEADER)
+                .long("enable-private-discovery")
+                .help("The boot node by default does not add nodes with private IP addresses to its routing table. Set this flag to add them.")
+                .display_order(0)
+        )
+        .arg(
+            Arg::new("topic-register")
+                .long("topic-register")
+                .value_name("TOPIC")
+                .help("Advertise this node for a topic through topic discovery. A topic is `0x` \
+                      followed by 64 hex digits, or else a name whose SHA-256 hash is used. \
+                      Takes a comma-separated list and can be given more than once.")
+                .action(ArgAction::Append)
+                .value_delimiter(',')
+                .display_order(0)
+        )
+        .arg(
+            Arg::new("topic-search")
+                .long("topic-search")
+                .value_name("TOPIC")
+                .help("Search for the nodes advertising a topic through topic discovery and log \
+                      each one found. Takes topics as --topic-register does.")
+                .action(ArgAction::Append)
+                .value_delimiter(',')
+                .display_order(0)
+        )
+        .arg(
             Arg::new("network-dir")
             .value_name("NETWORK_DIR")
                 .long("network-dir")

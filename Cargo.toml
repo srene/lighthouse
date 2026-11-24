@@ -136,7 +136,7 @@ delay_map = "0.4"
 deposit_contract = { path = "common/deposit_contract" }
 directory = { path = "common/directory" }
 dirs = "3"
-discv5 = { version = "0.12.0", features = ["libp2p"] }
+discv5 = { version = "0.12.0", features = ["libp2p", "topic-discovery"] }
 doppelganger_service = { path = "validator_client/doppelganger_service" }
 educe = "0.6"
 eip_3076 = { path = "common/eip_3076" }
@@ -298,3 +298,5 @@ tree_hash = { git = "https://github.com/sigp/tree_hash", rev = "e5ea1875edddf124
 tree_hash_derive = { git = "https://github.com/sigp/tree_hash", rev = "e5ea1875edddf12438506c3751cbb313f9c52d08" }
 # Temporary patch until the axum migration is complete
 warp = { git = "https://github.com/macladson/warp", rev = "6f5f21beab6a240e59470caaab56afd46d46b709" }
+# TopDisc topic discovery
+discv5 = { git = "https://github.com/datahop/discv5", rev = "023c220da3ff6ea287870eb04a64a4b2258a9de1" }

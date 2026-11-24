@@ -6,6 +6,7 @@ use super::ENR_FILENAME;
 use crate::NetworkConfig;
 use crate::types::{Enr, EnrAttestationBitfield, EnrSyncCommitteeBitfield};
 use alloy_rlp::bytes::Bytes;
+use discv5::topic::{TOPIC_DISCOVERY_ENR_KEY, TOPIC_DISCOVERY_VERSION};
 use libp2p::identity::Keypair;
 use network_utils::enr_ext::CombinedKeyExt;
 use network_utils::enr_ext::{EnrExt, QUIC_ENR_KEY, QUIC6_ENR_KEY};
@@ -290,6 +291,9 @@ pub fn build_enr<E: EthSpec>(
         builder.add_value(NEXT_FORK_DIGEST_ENR_KEY, &next_fork_digest);
     }
 
+    // set the topic discovery field, which discv5 would otherwise add with a sequence bump
+    builder.add_value(TOPIC_DISCOVERY_ENR_KEY, &TOPIC_DISCOVERY_VERSION);
+
     builder
         .build(enr_key)
         .map_err(|e| format!("Could not build Local ENR: {:?}", e))
@@ -320,6 +324,7 @@ fn compare_enr(local_enr: &Enr, disk_enr: &Enr) -> bool {
         && local_enr.get_decodable::<Bytes>(SYNC_COMMITTEE_BITFIELD_ENR_KEY) == disk_enr.get_decodable(SYNC_COMMITTEE_BITFIELD_ENR_KEY)
         && local_enr.get_decodable::<Bytes>(PEERDAS_CUSTODY_GROUP_COUNT_ENR_KEY) == disk_enr.get_decodable(PEERDAS_CUSTODY_GROUP_COUNT_ENR_KEY)
         && local_enr.get_decodable::<Bytes>(NEXT_FORK_DIGEST_ENR_KEY) == disk_enr.get_decodable(NEXT_FORK_DIGEST_ENR_KEY)
+        && local_enr.get_decodable::<u64>(TOPIC_DISCOVERY_ENR_KEY) == disk_enr.get_decodable(TOPIC_DISCOVERY_ENR_KEY)
 }
 
 /// Loads enr from the given directory
@@ -405,6 +410,32 @@ mod test {
         enr.eth2().unwrap();
         enr.attestation_bitfield::<E>().unwrap();
         enr.sync_committee_bitfield::<E>().unwrap();
+    }
+
+    #[test]
+    fn test_topic_discovery_enr_field() {
+        let (enr, _key) = build_enr_with_config(NetworkConfig::default(), 4, &E::default_spec());
+        assert!(discv5::topic::supports_topic_discovery(&enr));
+    }
+
+    #[test]
+    fn test_disk_enr_without_topic_discovery_is_replaced() {
+        let network_dir = tempfile::tempdir().unwrap();
+        let config = NetworkConfig {
+            network_dir: network_dir.path().to_path_buf(),
+            ..NetworkConfig::default()
+        };
+        let (mut enr, enr_key) = build_enr_with_config(config.clone(), 4, &E::default_spec());
+        let mut disk_enr = enr.clone();
+        disk_enr
+            .remove_key(TOPIC_DISCOVERY_ENR_KEY, &enr_key)
+            .unwrap();
+        save_enr_to_disk(network_dir.path(), &disk_enr);
+
+        use_or_load_enr(&enr_key, &mut enr, &config).unwrap();
+        assert!(discv5::topic::supports_topic_discovery(&enr));
+        assert_eq!(enr.seq(), disk_enr.seq() + 1);
+        assert_eq!(load_enr_from_disk(network_dir.path()).unwrap(), enr);
     }
 
     #[test]

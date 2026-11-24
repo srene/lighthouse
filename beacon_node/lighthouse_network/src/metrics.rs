@@ -45,6 +45,18 @@ pub static PEER_DISCONNECT_EVENT_COUNT: LazyLock<Result<IntCounter>> = LazyLock:
         "Count of libp2p peer disconnect events",
     )
 });
+pub static DISCOVERY_TOPIC_REGISTERED: LazyLock<Result<IntCounter>> = LazyLock::new(|| {
+    try_create_int_counter(
+        "discovery_topic_registered_total",
+        "Count of topic advertisements stored by registrars",
+    )
+});
+pub static DISCOVERY_TOPIC_NODES_FOUND: LazyLock<Result<IntCounter>> = LazyLock::new(|| {
+    try_create_int_counter(
+        "discovery_topic_nodes_found_total",
+        "Count of nodes found by topic searches",
+    )
+});
 pub static DISCOVERY_NO_USEFUL_ENRS: LazyLock<Result<IntCounter>> = LazyLock::new(|| {
     try_create_int_counter(
         "discovery_no_useful_enrs_found",
