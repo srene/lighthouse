@@ -299,4 +299,4 @@ tree_hash_derive = { git = "https://github.com/sigp/tree_hash", rev = "e5ea1875e
 # Temporary patch until the axum migration is complete
 warp = { git = "https://github.com/macladson/warp", rev = "6f5f21beab6a240e59470caaab56afd46d46b709" }
 # TopDisc topic discovery
-discv5 = { git = "https://github.com/datahop/discv5", rev = "d95e9a75af8713decac935fae8e6e0414c232bbf" }
+discv5 = { git = "https://github.com/datahop/discv5", rev = "ccccd061b2223e6dc08554c7053a6113136943b2" }
